@@ -3,30 +3,53 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Angel Filter — Demo</title>
+<title>Angel Filter</title>
 <style>
-  :root { --bg: #0f1420; --card: #1a2032; --ink: #e8ecf5; --muted: #93a0b8; --accent: #6aa9ff; --warn: #ffb36a; --good: #7dd87a; }
+  :root {
+    --bg: #0f1420; --card: #1a2032; --ink: #e8ecf5; --muted: #93a0b8;
+    --accent: #6aa9ff; --warn: #ffb36a; --good: #7dd87a; --border: #2a3450;
+    --best-border: #6aa9ff44;
+  }
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
-  main { max-width: 820px; margin: 0 auto; padding: 40px 24px; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 24px; }
   h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: -0.02em; }
   .sub { color: var(--muted); margin-bottom: 28px; }
   form { display: grid; gap: 10px; margin-bottom: 24px; }
-  input, textarea, button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid #2a3450; border-radius: 10px; padding: 12px 14px; }
-  input:focus, textarea:focus { outline: 2px solid var(--accent); }
-  button { background: var(--accent); color: #081020; border: none; font-weight: 600; cursor: pointer; padding: 12px 18px; }
-  button:hover { filter: brightness(1.1); }
-  button:disabled { opacity: 0.5; cursor: wait; }
+  input { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; width: 100%; }
+  input:focus { outline: 2px solid var(--accent); }
+  button.primary { font: inherit; color: #081020; background: var(--accent); border: none; border-radius: 10px; font-weight: 600; cursor: pointer; padding: 12px 18px; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: 0.5; cursor: wait; }
   .label { color: var(--muted); font-size: 13px; margin-bottom: -4px; }
   .meta { color: var(--muted); font-size: 13px; margin: 16px 0 10px; }
-  .card { background: var(--card); border: 1px solid #2a3450; border-radius: 12px; padding: 16px 18px; margin-bottom: 10px; }
-  .rank { display: inline-block; background: #2a3450; color: var(--accent); font-weight: 700; padding: 2px 10px; border-radius: 999px; margin-right: 8px; }
-  .title { font-weight: 600; }
-  .snippet { color: var(--muted); margin-top: 6px; font-size: 14px; }
-  .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; font-size: 12px; }
+  .intent-badge { display: inline-block; background: #1e2d50; color: var(--accent); font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; margin-left: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Best answer card */
+  .best-card { background: var(--card); border: 1px solid var(--best-border); border-radius: 14px; padding: 20px 22px; margin-bottom: 16px; position: relative; }
+  .best-label { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
+  .best-title { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .best-snippet { color: var(--muted); font-size: 14px; margin-bottom: 10px; }
+  .consensus-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  .consensus-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+  .axis-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .axis-chip { font-size: 12px; background: #202840; border-radius: 8px; padding: 4px 10px; }
+  .axis-chip span { color: var(--accent); font-weight: 600; }
+
+  /* Other results */
+  .toggle-btn { background: none; border: 1px solid var(--border); color: var(--muted); font: inherit; font-size: 13px; border-radius: 8px; padding: 6px 14px; cursor: pointer; margin-bottom: 12px; }
+  .toggle-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .others { display: none; }
+  .others.open { display: block; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; margin-bottom: 8px; }
+  .rank { display: inline-block; background: #2a3450; color: var(--accent); font-weight: 700; padding: 2px 9px; border-radius: 999px; margin-right: 8px; font-size: 13px; }
+  .card-title { font-weight: 600; }
+  .snippet { color: var(--muted); margin-top: 5px; font-size: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; font-size: 12px; }
   .chip { background: #202840; color: var(--muted); border-radius: 999px; padding: 3px 10px; }
   .chip.sponsored { background: #3a2a1a; color: var(--warn); }
   .chip.good { background: #1a3a22; color: var(--good); }
+  .chip.agreed { background: #1a2e3a; color: #6ad4ff; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .error { color: var(--warn); }
@@ -35,14 +58,14 @@
 <body>
 <main>
   <h1>Angel Filter</h1>
-  <p class="sub">A proxy that asks several providers, ranks their answers against what <em>you</em> care about, and penalizes sponsored results.</p>
+  <p class="sub">Asks multiple AI providers, finds what they agree on, ranks by what <em>you</em> care about.</p>
 
   <form id="f">
     <span class="label">What are you looking for?</span>
-    <input id="q" placeholder='e.g. "cheapest 30-pack of toilet paper"' required />
+    <input id="q" placeholder='e.g. "find three top lunch spots, budget $15"' required />
     <span class="label">What matters most to you? (optional)</span>
-    <input id="p" placeholder='e.g. "low price, not premium brand"' />
-    <button id="go" type="submit">Ask the Angel</button>
+    <input id="p" placeholder='e.g. "low price" or "closest to me" or "highest rated"' />
+    <button id="go" class="primary" type="submit">Ask Angel Filter</button>
   </form>
 
   <div id="out"></div>
@@ -50,12 +73,12 @@
 
 <script>
 const form = document.getElementById("f");
-const out = document.getElementById("out");
-const btn = document.getElementById("go");
+const out  = document.getElementById("out");
+const btn  = document.getElementById("go");
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const query = document.getElementById("q").value.trim();
+  const query      = document.getElementById("q").value.trim();
   const preference = document.getElementById("p").value.trim() || null;
   if (!query) return;
 
@@ -69,45 +92,105 @@ form.addEventListener("submit", async (e) => {
       body: JSON.stringify({ query, preference }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    render(data);
+    render(await res.json());
   } catch (err) {
-    out.innerHTML = `<div class="card error">Request failed: ${err.message}</div>`;
+    out.innerHTML = `<div class="card error">Request failed: ${esc(err.message)}</div>`;
   } finally {
     btn.disabled = false;
   }
 });
 
 function render(data) {
-  const used = (data.providers_used || []).join(", ") || "none";
-  const failed = (data.providers_failed || []).join(", ");
-  let html = `<div class="meta">Providers used: ${used}${failed ? " · failed: " + failed : ""}</div>`;
-  if (!data.results || data.results.length === 0) {
+  const results = data.results || [];
+  const used    = (data.providers_used || []).join(", ") || "none";
+  const failed  = (data.providers_failed || []).join(", ");
+  const intent  = data.intent || "general";
+
+  let html = `<div class="meta">
+    Providers: ${esc(used)}${failed ? " · failed: " + esc(failed) : ""}
+    <span class="intent-badge">${esc(intent)}</span>
+  </div>`;
+
+  if (!results.length) {
     html += `<div class="card">No results returned.</div>`;
-  } else {
-    data.results.forEach((r, i) => {
-      const chips = [
-        `<span class="chip">score ${r.score}</span>`,
-        `<span class="chip">${r.provider}</span>`,
-        r.sponsored
-          ? `<span class="chip sponsored">sponsored · penalized</span>`
-          : `<span class="chip good">organic</span>`,
-      ].join("");
-      html += `
-        <div class="card">
-          <span class="rank">#${i + 1}</span><span class="title">${escape(r.title)}</span>
-          <div class="snippet">${escape(r.snippet || "")}</div>
-          ${r.url ? `<div class="snippet"><a href="${escape(r.url)}" target="_blank" rel="noopener">${escape(r.url)}</a></div>` : ""}
-          <div class="row">${chips}</div>
-          <div class="snippet"><em>${escape(r.rationale || "")}</em></div>
-        </div>`;
-    });
+    out.innerHTML = html;
+    return;
   }
+
+  // --- Best answer (first result) ---
+  const best = results[0];
+  const axes = best.axis_scores || {};
+  const axisHtml = Object.entries(axes).map(([k, v]) =>
+    `<div class="axis-chip">${esc(k.replace("_", " "))}: <span>${v}</span></div>`
+  ).join("");
+
+  html += `<div class="best-card">
+    <div class="best-label">Angel Filter's best answer</div>
+    <div class="best-title">${esc(best.title)}</div>
+    <div class="best-snippet">${esc(best.snippet || "")}</div>
+    ${best.url ? `<div class="best-snippet"><a href="${esc(best.url)}" target="_blank" rel="noopener">${esc(best.url)}</a></div>` : ""}
+    ${(best.consensus_count || 0) > 1
+      ? `<div class="consensus-bar"><div class="consensus-dot"></div>${esc(String(best.consensus_count))} providers agreed on this answer</div>`
+      : ""}
+    <div class="axis-row">${axisHtml}</div>
+    <div class="row">
+      <span class="chip">score ${best.score}</span>
+      <span class="chip">${esc(best.provider)}</span>
+      ${best.sponsored
+        ? `<span class="chip sponsored">sponsored · penalized</span>`
+        : `<span class="chip good">organic</span>`}
+      ${(best.consensus_count || 0) > 1
+        ? `<span class="chip agreed">${esc(String(best.consensus_count))} agreed</span>`
+        : ""}
+    </div>
+    <div class="snippet" style="margin-top:8px"><em>${esc(best.rationale || "")}</em></div>
+  </div>`;
+
+  // --- Toggle for remaining results ---
+  if (results.length > 1) {
+    html += `<button class="toggle-btn" onclick="toggleOthers(this)">
+      Show other responses (${results.length - 1})
+    </button>
+    <div class="others" id="others">`;
+
+    results.slice(1).forEach((r, i) => {
+      html += `<div class="card">
+        <span class="rank">#${i + 2}</span><span class="card-title">${esc(r.title)}</span>
+        <div class="snippet">${esc(r.snippet || "")}</div>
+        ${r.url ? `<div class="snippet"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a></div>` : ""}
+        <div class="row">
+          <span class="chip">score ${r.score}</span>
+          <span class="chip">${esc(r.provider)}</span>
+          ${r.sponsored
+            ? `<span class="chip sponsored">sponsored · penalized</span>`
+            : `<span class="chip good">organic</span>`}
+          ${(r.consensus_count || 0) > 1
+            ? `<span class="chip agreed">${esc(String(r.consensus_count))} agreed</span>`
+            : ""}
+        </div>
+        <div class="snippet"><em>${esc(r.rationale || "")}</em></div>
+      </div>`;
+    });
+
+    html += `</div>`;
+  }
+
   out.innerHTML = html;
 }
 
-function escape(s) {
-  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function toggleOthers(btn) {
+  const el = document.getElementById("others");
+  const open = el.classList.toggle("open");
+  const count = (el.querySelectorAll(".card") || []).length;
+  btn.textContent = open
+    ? `Hide other responses (${count})`
+    : `Show other responses (${count})`;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])
+  );
 }
 </script>
 </body>

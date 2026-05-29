@@ -1,10 +1,11 @@
 """Orchestrator — runs every registered provider in parallel, collects results,
 then hands the combined pile to the ranker.
 
-This is the function the NLIP handler calls. Keeping the orchestration logic
-separate from the NLIP plumbing makes it trivially unit-testable (no server
-required) and easy for the team to extend: to add a provider, just register
-it here; to change how results combine, edit the ranker.
+Responsible for three things the ranker doesn't own:
+  1. Fan-out — fire all providers simultaneously, isolate failures.
+  2. Intent detection — classify the query as price / distance / rating / general.
+  3. Constraint extraction — parse explicit values ($15, 5 miles, 4 stars) from
+     the query so the ranker can compute real axis gaps instead of neutral proxies.
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from angel_filter.constraints import QueryConstraints, extract_constraints
 from angel_filter.providers.base import BaseProvider, ProviderError, ProviderResult
-from angel_filter.ranker import RankedResult, Ranker
+from angel_filter.ranker import QueryIntent, RankedResult, Ranker, detect_intent
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,9 @@ class OrchestratorResponse:
     ranked: list[RankedResult]
     providers_used: list[str]
     providers_failed: list[str]
+    intent: QueryIntent
+    constraints: QueryConstraints
+    axis_scores: dict[str, float] | None = None  # P1/P2/P3 of the top result
 
 
 class Orchestrator:
@@ -39,16 +44,22 @@ class Orchestrator:
         user_preference: str | None = None,
         top_k: int = 5,
     ) -> OrchestratorResponse:
-        """Run the full pipeline: fan out, collect, rank.
+        """Run the full pipeline: extract constraints → detect intent → fan out → rank."""
 
-        Args:
-            user_query: what the user typed (goes to the providers).
-            user_preference: optional clarifier like "I care about price, not speed."
-                If omitted we rank against the query text itself.
-            top_k: how many ranked results to return.
-        """
-        # Fan out to all providers in parallel. A slow provider does not block
-        # the fast ones, and a failing one does not poison the rest.
+        # Combine query + preference so signals in either field are captured
+        full_text   = f"{user_query} {user_preference or ''}".strip()
+        intent      = detect_intent(full_text)
+        constraints = extract_constraints(full_text)
+
+        logger.info(
+            "Intent: %s | Constraints: budget=%s, distance=%s, rating=%s",
+            intent.value,
+            constraints.budget,
+            constraints.max_distance,
+            constraints.min_rating,
+        )
+
+        # Fan out to all providers in parallel
         tasks = [self._safe_query(p, user_query) for p in self.providers]
         per_provider = await asyncio.gather(*tasks)
 
@@ -63,17 +74,29 @@ class Orchestrator:
                 all_results.extend(outcome)
 
         if not all_results:
-            return OrchestratorResponse(ranked=[], providers_used=used, providers_failed=failed)
+            return OrchestratorResponse(
+                ranked=[],
+                providers_used=used,
+                providers_failed=failed,
+                intent=intent,
+                constraints=constraints,
+            )
 
         ranked = await self.ranker.rank(
             user_preference or user_query,
             all_results,
             top_k=top_k,
+            intent=intent,
+            constraints=constraints,
         )
+
         return OrchestratorResponse(
             ranked=ranked,
             providers_used=used,
             providers_failed=failed,
+            intent=intent,
+            constraints=constraints,
+            axis_scores=ranked[0].axis_scores if ranked else None,
         )
 
     async def _safe_query(
@@ -86,6 +109,6 @@ class Orchestrator:
         except ProviderError as exc:
             logger.warning("Provider %s failed: %s", provider.name, exc)
             return None
-        except Exception as exc:  # noqa: BLE001 — we really do want to absorb everything here
+        except Exception as exc:  # noqa: BLE001
             logger.exception("Provider %s raised unexpected error: %s", provider.name, exc)
             return None

@@ -1,140 +1,363 @@
 """Ranker — the brain of the Angel Filter.
 
-Takes the user's stated preferences and a flat list of provider results, and
-re-orders them by how well each result matches the user's request. Uses
-embeddings from a local Ollama model so nothing leaves the user's machine.
+Scoring has four layers, applied in order:
 
-Scoring is:
-    final_score = cosine_similarity(user_pref, result_text)
-                  - SPONSORED_PENALTY if result.sponsored
+  1. Semantic similarity — cosine similarity between the user preference
+     embedding and the result text (via Ollama). Falls back to keyword
+     overlap when Ollama is offline.
 
-SPONSORED_PENALTY is the whole point of the project — it's why we're not just
-re-ranking by relevance, we're explicitly de-weighting ad content.
+  2. Real-gap axis scoring — compute actual deltas between the candidate's
+     structured fields and the user's extracted constraints:
+       P1 price_gap    = candidate.price    - budget       (negative = under budget)
+       P2 distance_gap = candidate.distance - max_distance (negative = closer)
+       P3 rating_gap   = min_rating         - candidate.rating (negative = meets threshold)
+     Gaps are normalised to 0-1 and weighted by the detected intent axis.
 
-If Ollama is unavailable (no model pulled, daemon not running) the ranker
-falls back to a keyword-overlap baseline so the demo still runs. The fallback
-is clearly marked in the response so it's never mistaken for the real thing.
+  3. Fuzzy consensus — candidates mentioned by multiple providers are boosted.
+     Matching uses token overlap AND (when Ollama is available) embedding
+     distance, so "Joe's Pizza" and "Joe Pizza" cluster together.
+
+  4. Sponsored penalty — explicit deduction for any ad-flagged result.
+
+Final score:
+    score = semantic_similarity
+            + (AXIS_WEIGHT  * axis_score)
+            + (CONSENSUS_BONUS * extra_providers)
+            - (SPONSORED_PENALTY if sponsored)
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
+from enum import Enum
 
+from angel_filter.constraints import QueryConstraints
 from angel_filter.providers.base import ProviderResult
 
 logger = logging.getLogger(__name__)
 
+# --- Tunable weights ----------------------------------------------------------
 SPONSORED_PENALTY: float = 0.15
-DEFAULT_EMBED_MODEL: str = "nomic-embed-text"  # small, fast, widely available on Ollama
+AXIS_WEIGHT: float       = 0.25   # contribution of the dominant axis gap score
+CONSENSUS_BONUS: float   = 0.10   # bonus per extra provider that agreed
+FUZZY_THRESHOLD: float   = 0.75   # embedding similarity above which two titles cluster
+DEFAULT_EMBED_MODEL: str = "nomic-embed-text"
 
+
+# --- Query intent -------------------------------------------------------------
+
+class QueryIntent(str, Enum):
+    PRICE    = "price"
+    DISTANCE = "distance"
+    RATING   = "rating"
+    GENERAL  = "general"
+
+
+_PRICE_KEYWORDS    = {"price", "cheap", "cheapest", "cost", "budget", "affordable",
+                      "inexpensive", "low", "deal", "discount", "free", "save"}
+_DISTANCE_KEYWORDS = {"near", "nearest", "close", "closest", "nearby", "distance",
+                      "walking", "local", "around", "location", "convenient"}
+_RATING_KEYWORDS   = {"best", "top", "rated", "rating", "review", "reviews",
+                      "trusted", "quality", "popular", "recommended", "highest"}
+
+
+def detect_intent(query: str) -> QueryIntent:
+    tokens        = {t.lower().strip(".,!?;:'\"") for t in query.split()}
+    price_hits    = len(tokens & _PRICE_KEYWORDS)
+    distance_hits = len(tokens & _DISTANCE_KEYWORDS)
+    rating_hits   = len(tokens & _RATING_KEYWORDS)
+    best = max(price_hits, distance_hits, rating_hits)
+    if best == 0:
+        return QueryIntent.GENERAL
+    if price_hits == best:
+        return QueryIntent.PRICE
+    if distance_hits == best:
+        return QueryIntent.DISTANCE
+    return QueryIntent.RATING
+
+
+# --- Result dataclass ---------------------------------------------------------
 
 @dataclass
 class RankedResult:
     result: ProviderResult
     score: float
-    rationale: str  # short human-readable explanation; the UI will show this
+    rationale: str
+    axis_scores: dict[str, float] = field(default_factory=dict)
+    consensus_count: int = 0
 
+
+# --- Ranker -------------------------------------------------------------------
 
 class Ranker:
     def __init__(self, embed_model: str = DEFAULT_EMBED_MODEL):
         self.embed_model = embed_model
-        self._ollama_available: bool | None = None  # lazily probed
+        self._ollama_available: bool | None = None
 
     async def rank(
         self,
         user_preference: str,
         results: list[ProviderResult],
         top_k: int = 5,
+        intent: QueryIntent = QueryIntent.GENERAL,
+        constraints: QueryConstraints | None = None,
     ) -> list[RankedResult]:
-        """Return the top_k results, ordered best-first."""
         if not results:
             return []
 
+        constraints = constraints or QueryConstraints()
+
         if await self._has_ollama():
-            scored = await self._score_with_embeddings(user_preference, results)
+            # Build fuzzy consensus map using embeddings when available
+            embeddings = await self._embed_all(results)
+            consensus  = _build_fuzzy_consensus(results, embeddings, FUZZY_THRESHOLD)
+            scored     = await self._score_with_embeddings(
+                user_preference, results, intent, constraints, consensus, embeddings
+            )
         else:
             logger.warning("Ollama unavailable; using keyword-overlap fallback.")
-            scored = _score_with_keywords(user_preference, results)
+            consensus = _build_token_consensus(results)
+            scored    = _score_with_keywords(
+                user_preference, results, intent, constraints, consensus
+            )
 
         scored.sort(key=lambda r: r.score, reverse=True)
         return scored[:top_k]
 
-    # -- private -------------------------------------------------------------
+    # -- private ---------------------------------------------------------------
 
     async def _has_ollama(self) -> bool:
-        """Probe Ollama once and cache the result for the lifetime of this ranker."""
         if self._ollama_available is not None:
             return self._ollama_available
         try:
-            import ollama  # lazy import so the module loads even if ollama isn't installed
-            # ollama.embeddings is a thin sync wrapper; calling it as a smoke test.
+            import ollama
             ollama.embeddings(model=self.embed_model, prompt="ping")
             self._ollama_available = True
-        except Exception as exc:  # ImportError, ConnectionError, ResponseError, etc.
+        except Exception as exc:
             logger.info("Ollama probe failed: %s", exc)
             self._ollama_available = False
         return self._ollama_available
+
+    async def _embed_all(
+        self, results: list[ProviderResult]
+    ) -> dict[int, list[float]]:
+        """Return {result_index: embedding_vector} for every result."""
+        import ollama
+        vecs: dict[int, list[float]] = {}
+        for i, r in enumerate(results):
+            text = f"{r.title}. {r.snippet}"
+            vecs[i] = ollama.embeddings(model=self.embed_model, prompt=text)["embedding"]
+        return vecs
 
     async def _score_with_embeddings(
         self,
         user_preference: str,
         results: list[ProviderResult],
+        intent: QueryIntent,
+        constraints: QueryConstraints,
+        consensus: dict[str, int],
+        embeddings: dict[int, list[float]],
     ) -> list[RankedResult]:
         import ollama
 
         pref_vec = ollama.embeddings(
-            model=self.embed_model,
-            prompt=user_preference,
+            model=self.embed_model, prompt=user_preference
         )["embedding"]
 
         scored: list[RankedResult] = []
-        for r in results:
-            result_text = f"{r.title}. {r.snippet}"
-            res_vec = ollama.embeddings(
-                model=self.embed_model,
-                prompt=result_text,
-            )["embedding"]
-            similarity = _cosine(pref_vec, res_vec)
-            score = similarity - (SPONSORED_PENALTY if r.sponsored else 0.0)
+        for i, r in enumerate(results):
+            similarity  = _cosine(pref_vec, embeddings[i])
+            axis_scores = _compute_gap_scores(r, constraints)
+            axis_bonus  = _axis_bonus(axis_scores, intent)
+            c_count     = consensus.get(_normalise(r.title), 1)
+            c_bonus     = CONSENSUS_BONUS * (c_count - 1)
+            penalty     = SPONSORED_PENALTY if r.sponsored else 0.0
+
+            final_score = similarity + axis_bonus + c_bonus - penalty
+
             scored.append(RankedResult(
                 result=r,
-                score=score,
-                rationale=_explain(similarity, r.sponsored),
+                score=round(final_score, 4),
+                rationale=_explain(similarity, axis_scores, intent, c_count, constraints, r.sponsored),
+                axis_scores=axis_scores,
+                consensus_count=c_count,
             ))
         return scored
 
 
+# --- Keyword fallback ---------------------------------------------------------
+
 def _score_with_keywords(
     user_preference: str,
     results: list[ProviderResult],
+    intent: QueryIntent,
+    constraints: QueryConstraints,
+    consensus: dict[str, int],
 ) -> list[RankedResult]:
-    """Very simple fallback: token overlap between preference and title+snippet."""
     pref_tokens = _tokens(user_preference)
     scored: list[RankedResult] = []
     for r in results:
-        haystack = _tokens(f"{r.title} {r.snippet}")
-        overlap = len(pref_tokens & haystack)
-        base_score = overlap / max(len(pref_tokens), 1)
-        score = base_score - (SPONSORED_PENALTY if r.sponsored else 0.0)
+        haystack    = _tokens(f"{r.title} {r.snippet}")
+        overlap     = len(pref_tokens & haystack)
+        similarity  = overlap / max(len(pref_tokens), 1)
+        axis_scores = _compute_gap_scores(r, constraints)
+        axis_bonus  = _axis_bonus(axis_scores, intent)
+        c_count     = consensus.get(_normalise(r.title), 1)
+        c_bonus     = CONSENSUS_BONUS * (c_count - 1)
+        penalty     = SPONSORED_PENALTY if r.sponsored else 0.0
+
+        final_score = similarity + axis_bonus + c_bonus - penalty
+
+        rationale = (
+            f"[keyword fallback] {overlap} terms matched"
+            + (f", {intent.value} axis" if intent != QueryIntent.GENERAL else "")
+            + (f", {c_count} providers agreed" if c_count > 1 else "")
+            + (" — sponsored penalty applied" if r.sponsored else "")
+        )
         scored.append(RankedResult(
             result=r,
-            score=score,
-            rationale=(
-                f"[keyword fallback] {overlap} preference terms matched"
-                + (" — sponsored penalty applied" if r.sponsored else "")
-            ),
+            score=round(final_score, 4),
+            rationale=rationale,
+            axis_scores=axis_scores,
+            consensus_count=c_count,
         ))
     return scored
 
+
+# --- Real-gap axis scoring ----------------------------------------------------
+
+def _compute_gap_scores(r: ProviderResult, c: QueryConstraints) -> dict[str, float]:
+    """Compute normalised 0-1 scores for each P axis using real constraint gaps.
+
+    Gap convention: negative gap = candidate meets or beats the constraint.
+    We map gap → score so that meeting the constraint gives 1.0 and badly
+    missing it gives 0.0.
+
+    When no constraint is set for an axis, score is neutral 0.5.
+    When the candidate has no data for an axis, score is neutral 0.5.
+    """
+
+    # P1 — Price: lower is better
+    if c.budget is not None and r.price is not None:
+        gap = r.price - c.budget          # negative = under budget
+        # Map: gap=-budget (free) → 1.0, gap=0 → 0.75, gap=budget → 0.0
+        p1 = max(0.0, min(1.0, 0.75 - (gap / max(c.budget, 1.0)) * 0.75))
+    elif r.price is not None:
+        # No budget set — score by absolute price (lower = better, $100 ceiling)
+        p1 = max(0.0, 1.0 - (r.price / 100.0))
+    else:
+        p1 = 0.5
+
+    # P2 — Distance: closer is better
+    if c.max_distance is not None and r.distance is not None:
+        gap = r.distance - c.max_distance  # negative = within range
+        p2 = max(0.0, min(1.0, 0.75 - (gap / max(c.max_distance, 0.1)) * 0.75))
+    elif r.distance is not None:
+        # No distance constraint — score by absolute distance (5 mile ceiling)
+        p2 = max(0.0, 1.0 - (r.distance / 5.0))
+    else:
+        p2 = 0.5
+
+    # P3 — Rating: higher is better
+    if c.min_rating is not None and r.rating is not None:
+        gap = c.min_rating - r.rating      # negative = meets or exceeds threshold
+        p3 = max(0.0, min(1.0, 0.75 + (gap / -5.0) * 0.25)) if gap <= 0 else max(0.0, 0.75 - gap * 0.25)
+    elif r.rating is not None:
+        p3 = r.rating / 5.0
+    else:
+        p3 = 0.5
+
+    return {
+        "P1_price":    round(p1, 3),
+        "P2_distance": round(p2, 3),
+        "P3_rating":   round(p3, 3),
+    }
+
+
+def _axis_bonus(axis_scores: dict[str, float], intent: QueryIntent) -> float:
+    if intent == QueryIntent.PRICE:
+        return AXIS_WEIGHT * axis_scores["P1_price"]
+    if intent == QueryIntent.DISTANCE:
+        return AXIS_WEIGHT * axis_scores["P2_distance"]
+    if intent == QueryIntent.RATING:
+        return AXIS_WEIGHT * axis_scores["P3_rating"]
+    return AXIS_WEIGHT * (sum(axis_scores.values()) / 3)
+
+
+# --- Fuzzy consensus clustering -----------------------------------------------
+
+def _build_fuzzy_consensus(
+    results: list[ProviderResult],
+    embeddings: dict[int, list[float]],
+    threshold: float,
+) -> dict[str, int]:
+    """Cluster results by embedding similarity, then count providers per cluster.
+
+    Two results are in the same cluster if their embeddings are above
+    `threshold` similar AND they come from different providers. The cluster
+    representative is the normalised title of the first member seen.
+    """
+    n = len(results)
+    # Union-find cluster assignment
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        parent[find(x)] = find(y)
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if results[i].provider == results[j].provider:
+                continue  # don't cluster results from the same provider
+            if _cosine(embeddings[i], embeddings[j]) >= threshold:
+                union(i, j)
+
+    # Count distinct providers per cluster
+    cluster_providers: dict[int, set[str]] = {}
+    for i, r in enumerate(results):
+        root = find(i)
+        cluster_providers.setdefault(root, set()).add(r.provider)
+
+    # Map each normalised title to the provider count of its cluster
+    counts: dict[str, int] = {}
+    for i, r in enumerate(results):
+        root = find(i)
+        counts[_normalise(r.title)] = len(cluster_providers[root])
+    return counts
+
+
+def _build_token_consensus(results: list[ProviderResult]) -> dict[str, int]:
+    """Fallback consensus: simple normalised-title exact match across providers."""
+    seen: set[tuple[str, str]] = set()
+    counts: Counter[str] = Counter()
+    for r in results:
+        key = (_normalise(r.title), r.provider)
+        if key not in seen:
+            seen.add(key)
+            counts[_normalise(r.title)] += 1
+    return dict(counts)
+
+
+# --- Maths & helpers ----------------------------------------------------------
 
 def _tokens(text: str) -> set[str]:
     return {t.lower().strip(".,!?;:") for t in text.split() if len(t) > 2}
 
 
+def _normalise(text: str) -> str:
+    return "".join(c for c in text.lower() if c.isalnum() or c.isspace()).strip()
+
+
 def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot   = sum(x * y for x, y in zip(a, b))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(y * y for y in b))
     if mag_a == 0 or mag_b == 0:
@@ -142,9 +365,30 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (mag_a * mag_b)
 
 
-def _explain(similarity: float, sponsored: bool | None) -> str:
-    tag = "strong match" if similarity > 0.7 else "partial match" if similarity > 0.4 else "weak match"
+def _explain(
+    similarity: float,
+    axis_scores: dict[str, float],
+    intent: QueryIntent,
+    consensus_count: int,
+    constraints: QueryConstraints,
+    sponsored: bool | None,
+) -> str:
+    tag  = "strong match" if similarity > 0.7 else "partial match" if similarity > 0.4 else "weak match"
     base = f"{tag} (similarity {similarity:.2f})"
+
+    if intent == QueryIntent.PRICE and constraints.budget is not None:
+        base += f", P1 price score {axis_scores['P1_price']:.2f} (budget ${constraints.budget})"
+    elif intent == QueryIntent.DISTANCE and constraints.max_distance is not None:
+        base += f", P2 distance score {axis_scores['P2_distance']:.2f} (within {constraints.max_distance} mi)"
+    elif intent == QueryIntent.RATING and constraints.min_rating is not None:
+        base += f", P3 rating score {axis_scores['P3_rating']:.2f} (min {constraints.min_rating}★)"
+    elif intent != QueryIntent.GENERAL:
+        axis_key = {"price": "P1_price", "distance": "P2_distance", "rating": "P3_rating"}[intent.value]
+        base += f", {intent.value} axis {axis_scores[axis_key]:.2f}"
+
+    if consensus_count > 1:
+        base += f", {consensus_count} providers agreed"
     if sponsored:
         base += f" — sponsored, penalty {SPONSORED_PENALTY} applied"
+
     return base

@@ -170,6 +170,12 @@ if _NLIP_AVAILABLE:
         return {
             "providers_used": response.providers_used,
             "providers_failed": response.providers_failed,
+            "intent": response.intent.value,
+            "constraints": {
+                "budget": response.constraints.budget,
+                "max_distance": response.constraints.max_distance,
+                "min_rating": response.constraints.min_rating,
+            },
             "results": [
                 {
                     "title": r.result.title,
@@ -179,6 +185,8 @@ if _NLIP_AVAILABLE:
                     "score": round(r.score, 3),
                     "rationale": r.rationale,
                     "sponsored": r.result.sponsored,
+                    "consensus_count": r.consensus_count,
+                    "axis_scores": r.axis_scores,
                 }
                 for r in response.ranked
             ],
@@ -241,6 +249,12 @@ else:
         return {
             "providers_used": response.providers_used,
             "providers_failed": response.providers_failed,
+            "intent": response.intent.value,
+            "constraints": {
+                "budget": response.constraints.budget,
+                "max_distance": response.constraints.max_distance,
+                "min_rating": response.constraints.min_rating,
+            },
             "results": [
                 {
                     "title": r.result.title,
@@ -250,6 +264,8 @@ else:
                     "score": round(r.score, 3),
                     "rationale": r.rationale,
                     "sponsored": r.result.sponsored,
+                    "consensus_count": r.consensus_count,
+                    "axis_scores": r.axis_scores,
                 }
                 for r in response.ranked
             ],

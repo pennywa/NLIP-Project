@@ -22,9 +22,11 @@ class ProviderResult:
     title: str
     snippet: str
     url: str | None = None
-    provider: str = ""                       # "google", "bing", "duckduckgo"...
+    provider: str = ""                       # "claude", "openai", "gemini", "duckduckgo"...
     rank_in_provider: int = 0                # where this appeared in the provider's own list
-    price: float | None = None               # for shopping / flight results
+    price: float | None = None               # P1 — price in dollars
+    distance: float | None = None            # P2 — distance in miles from user
+    rating: float | None = None              # P3 — star rating 0-5
     sponsored: bool | None = None            # True if the provider flagged it as an ad
     raw: dict[str, Any] = field(default_factory=dict)  # the untouched original payload
 
