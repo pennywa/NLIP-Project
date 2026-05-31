@@ -26,7 +26,7 @@ from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTEN
 
 from angel_filter.cache import CACHE
 from angel_filter.orchestrator import Orchestrator
-from angel_filter.providers import DuckDuckGoProvider, MockProvider
+from angel_filter.providers import BraveProvider, GeminiProvider, OllamaProvider, OpenAIProvider, WatsonXProvider
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,47 @@ UPTIME_GAUGE.set(_START_TIME)
 
 
 # --- Build the orchestrator once at import time ---
-# The set of providers the proxy fans out to. MockProvider is kept in the
-# default list so the demo always returns something even if the network is
-# unreliable. Once Google/Bing adapters land, append them here.
 def _build_orchestrator() -> Orchestrator:
-    providers = [
-        DuckDuckGoProvider(),
-        MockProvider(),
-    ]
+    providers = []
+    # Add WatsonX if API key and project ID are present
+    if os.getenv("WATSONX_API_KEY") and os.getenv("WATSONX_PROJECT_ID"):
+        providers.append(WatsonXProvider())
+        logger.info("WatsonXProvider enabled.")
+    else:
+        logger.info("WATSONX_API_KEY or WATSONX_PROJECT_ID not set — WatsonXProvider skipped.")
+
+    # Add Brave if API key is present
+    if os.getenv("BRAVE_API_KEY"):
+        providers.append(BraveProvider())
+        logger.info("BraveProvider enabled.")
+    else:
+        logger.info("BRAVE_API_KEY not set — BraveProvider skipped.")
+
+    # Add OpenAI if API key is present
+    if os.getenv("OPENAI_API_KEY"):
+        providers.append(OpenAIProvider())
+        logger.info("OpenAIProvider enabled.")
+    else:
+        logger.info("OPENAI_API_KEY not set — OpenAIProvider skipped.")
+
+    # Add Gemini if API key is present
+    if os.getenv("GEMINI_API_KEY"):
+        providers.append(GeminiProvider())
+        logger.info("GeminiProvider enabled.")
+    else:
+        logger.info("GEMINI_API_KEY not set — GeminiProvider skipped.")
+
+    # Add Ollama if configured
+    if os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_MODEL"):
+        providers.append(OllamaProvider())
+        logger.info("OllamaProvider enabled.")
+
+    if not providers:
+        raise RuntimeError(
+            "No providers configured. Set at least one of: "
+            "OPENAI_API_KEY, GEMINI_API_KEY, WATSONX_API_KEY, BRAVE_API_KEY, OLLAMA_MODEL"
+        )
+
     return Orchestrator(providers=providers)
 
 
@@ -216,6 +249,10 @@ else:
     )
 
     _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+
+    if _STATIC_DIR.exists():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     class QueryIn(BaseModel):
         query: str
