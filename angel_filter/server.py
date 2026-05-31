@@ -24,6 +24,7 @@ import time
 from fastapi import FastAPI, Request, Response
 from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
+from angel_filter.cache import CACHE
 from angel_filter.orchestrator import Orchestrator
 from angel_filter.providers import DuckDuckGoProvider, MockProvider
 
@@ -233,6 +234,12 @@ else:
 
     @app.post("/query")
     async def query(body: QueryIn):
+        # Return cached result if fresh
+        cached = CACHE.get(body.query, body.preference)
+        if cached:
+            logger.info("Cache hit for query: %r", body.query)
+            return cached
+
         with QUERY_LATENCY.time():
             try:
                 response = await ORCHESTRATOR.handle_query(
@@ -246,7 +253,8 @@ else:
             except Exception:
                 QUERY_COUNT.labels(status="error").inc()
                 raise
-        return {
+
+        payload = {
             "providers_used": response.providers_used,
             "providers_failed": response.providers_failed,
             "intent": response.intent.value,
@@ -255,6 +263,7 @@ else:
                 "max_distance": response.constraints.max_distance,
                 "min_rating": response.constraints.min_rating,
             },
+            "cached": False,
             "results": [
                 {
                     "title": r.result.title,
@@ -270,6 +279,18 @@ else:
                 for r in response.ranked
             ],
         }
+        CACHE.set(body.query, body.preference, {**payload, "cached": True})
+        return payload
+
+    @app.get("/history")
+    async def history():
+        return {"queries": CACHE.history(), "cache_stats": CACHE.stats()}
+
+    @app.post("/cache/clear")
+    async def cache_clear():
+        CACHE._store.clear()
+        CACHE._history.clear()
+        return {"ok": True, "message": "Cache cleared."}
 
     @app.get("/metrics")
     async def metrics():

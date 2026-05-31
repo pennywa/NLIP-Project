@@ -40,11 +40,19 @@ from angel_filter.providers.base import ProviderResult
 logger = logging.getLogger(__name__)
 
 # --- Tunable weights ----------------------------------------------------------
-SPONSORED_PENALTY: float = 0.15
-AXIS_WEIGHT: float       = 0.25   # contribution of the dominant axis gap score
-CONSENSUS_BONUS: float   = 0.10   # bonus per extra provider that agreed
+# Weights sum to 1.0 across the three scoring components so no single
+# signal can dominate. Adjust these to shift ranking behaviour.
+W_SIMILARITY: float  = 0.50   # semantic similarity contribution
+W_AXIS: float        = 0.35   # axis score contribution (split across all 3 axes)
+W_CONSENSUS: float   = 0.15   # consensus contribution (capped)
+
+SPONSORED_PENALTY: float = 0.20   # raised — ads should be clearly demoted
+CONSENSUS_BONUS: float   = 0.075  # per extra provider; capped at 2 providers max
 FUZZY_THRESHOLD: float   = 0.75   # embedding similarity above which two titles cluster
 DEFAULT_EMBED_MODEL: str = "nomic-embed-text"
+
+# Keep for backwards-compat in tests that reference AXIS_WEIGHT
+AXIS_WEIGHT: float = W_AXIS
 
 
 # --- Query intent -------------------------------------------------------------
@@ -110,6 +118,12 @@ class Ranker:
 
         constraints = constraints or QueryConstraints()
 
+        # Hard constraint filtering — remove results that clearly violate budget
+        # or minimum rating before scoring so they can't sneak into the top 5
+        results = _apply_hard_constraints(results, constraints)
+        if not results:
+            return []
+
         if await self._has_ollama():
             # Build fuzzy consensus map using embeddings when available
             embeddings = await self._embed_all(results)
@@ -173,10 +187,17 @@ class Ranker:
             axis_scores = _compute_gap_scores(r, constraints)
             axis_bonus  = _axis_bonus(axis_scores, intent)
             c_count     = consensus.get(_normalise(r.title), 1)
-            c_bonus     = CONSENSUS_BONUS * (c_count - 1)
+            # Cap consensus at 2 extra providers to prevent gang-up effect
+            c_bonus     = CONSENSUS_BONUS * min(c_count - 1, 2)
             penalty     = SPONSORED_PENALTY if r.sponsored else 0.0
 
-            final_score = similarity + axis_bonus + c_bonus - penalty
+            # Balanced formula: each component has a defined weight
+            final_score = (
+                W_SIMILARITY * similarity
+                + W_AXIS * axis_bonus
+                + W_CONSENSUS * c_bonus
+                - penalty
+            )
 
             scored.append(RankedResult(
                 result=r,
@@ -206,10 +227,15 @@ def _score_with_keywords(
         axis_scores = _compute_gap_scores(r, constraints)
         axis_bonus  = _axis_bonus(axis_scores, intent)
         c_count     = consensus.get(_normalise(r.title), 1)
-        c_bonus     = CONSENSUS_BONUS * (c_count - 1)
+        c_bonus     = CONSENSUS_BONUS * min(c_count - 1, 2)
         penalty     = SPONSORED_PENALTY if r.sponsored else 0.0
 
-        final_score = similarity + axis_bonus + c_bonus - penalty
+        final_score = (
+            W_SIMILARITY * similarity
+            + W_AXIS * axis_bonus
+            + W_CONSENSUS * c_bonus
+            - penalty
+        )
 
         rationale = (
             f"[keyword fallback] {overlap} terms matched"
@@ -225,6 +251,37 @@ def _score_with_keywords(
             consensus_count=c_count,
         ))
     return scored
+
+
+# --- Hard constraint filtering ------------------------------------------------
+
+def _apply_hard_constraints(
+    results: list[ProviderResult],
+    c: QueryConstraints,
+) -> list[ProviderResult]:
+    """Remove results that clearly violate hard constraints.
+
+    Only filters when the result has data for that axis AND the violation
+    is significant (>25% over budget, below min rating). Results with no
+    data for an axis pass through — we don't penalize missing data.
+    """
+    filtered = []
+    for r in results:
+        # Budget: reject if price is more than 25% over budget
+        if c.budget is not None and r.price is not None:
+            if r.price > c.budget * 1.25:
+                logger.debug("Hard filter: %s ($%.2f) exceeds budget $%.2f", r.title, r.price, c.budget)
+                continue
+        # Rating: reject if rating is more than 0.5 stars below minimum
+        if c.min_rating is not None and r.rating is not None:
+            if r.rating < c.min_rating - 0.5:
+                logger.debug("Hard filter: %s (%.1f★) below min rating %.1f★", r.title, r.rating, c.min_rating)
+                continue
+        filtered.append(r)
+
+    # Never return empty — if everything got filtered, return all results
+    # (better to show something than nothing)
+    return filtered if filtered else results
 
 
 # --- Real-gap axis scoring ----------------------------------------------------
@@ -278,13 +335,29 @@ def _compute_gap_scores(r: ProviderResult, c: QueryConstraints) -> dict[str, flo
 
 
 def _axis_bonus(axis_scores: dict[str, float], intent: QueryIntent) -> float:
+    """Compute weighted axis score — all three axes always contribute.
+
+    Intent shifts the weights so the dominant axis gets more influence,
+    but the other two axes still count. This handles "cheap AND nearby"
+    queries correctly instead of winner-take-all on a single axis.
+
+    Weights per intent (dominant / secondary / tertiary):
+      PRICE:    60% / 20% / 20%
+      DISTANCE: 60% / 20% / 20%
+      RATING:   60% / 20% / 20%
+      GENERAL:  33% / 33% / 33%
+    """
+    p1 = axis_scores["P1_price"]
+    p2 = axis_scores["P2_distance"]
+    p3 = axis_scores["P3_rating"]
+
     if intent == QueryIntent.PRICE:
-        return AXIS_WEIGHT * axis_scores["P1_price"]
+        return 0.60 * p1 + 0.20 * p2 + 0.20 * p3
     if intent == QueryIntent.DISTANCE:
-        return AXIS_WEIGHT * axis_scores["P2_distance"]
+        return 0.20 * p1 + 0.60 * p2 + 0.20 * p3
     if intent == QueryIntent.RATING:
-        return AXIS_WEIGHT * axis_scores["P3_rating"]
-    return AXIS_WEIGHT * (sum(axis_scores.values()) / 3)
+        return 0.20 * p1 + 0.20 * p2 + 0.60 * p3
+    return (p1 + p2 + p3) / 3
 
 
 # --- Fuzzy consensus clustering -----------------------------------------------

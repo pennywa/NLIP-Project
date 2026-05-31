@@ -5,9 +5,14 @@ must implement the same async `query()` method so the proxy can fan out to
 all of them in parallel and normalize their responses.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from angel_filter.constraints import QueryConstraints
 
 
 @dataclass
@@ -45,12 +50,19 @@ class BaseProvider(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(
+        self,
+        user_query: str,
+        max_results: int = 10,
+        constraints: QueryConstraints | None = None,
+    ) -> list[ProviderResult]:
         """Submit a query and return normalized results.
 
         Args:
-            user_query: the raw text the user typed.
-            max_results: soft cap on how many results to return.
+            user_query:   the raw text the user typed.
+            max_results:  soft cap on how many results to return.
+            constraints:  parsed constraints to pass to AI providers for
+                          better-targeted prompts. May be None.
 
         Returns:
             A list of ProviderResult, ordered as the provider returned them.

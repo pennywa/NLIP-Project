@@ -59,8 +59,9 @@ class Orchestrator:
             constraints.min_rating,
         )
 
-        # Fan out to all providers in parallel
-        tasks = [self._safe_query(p, user_query) for p in self.providers]
+        # Fan out to all providers in parallel, passing constraints so AI
+        # providers can inject them directly into their prompts
+        tasks = [self._safe_query(p, user_query, constraints) for p in self.providers]
         per_provider = await asyncio.gather(*tasks)
 
         all_results: list[ProviderResult] = []
@@ -103,9 +104,10 @@ class Orchestrator:
         self,
         provider: BaseProvider,
         user_query: str,
+        constraints: QueryConstraints | None = None,
     ) -> list[ProviderResult] | None:
         try:
-            return await provider.query(user_query)
+            return await provider.query(user_query, constraints=constraints)
         except ProviderError as exc:
             logger.warning("Provider %s failed: %s", provider.name, exc)
             return None
