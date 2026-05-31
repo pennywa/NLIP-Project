@@ -162,52 +162,238 @@ score = 0.50 × similarity
 
 ## Setup
 
-**Prerequisites:** Python 3.12 (via pyenv), Ollama running locally.
+Choose your operating system below. You need at least one API key to run the server — Gemini has a free tier and is the easiest to get started with.
 
-> Note: Poetry's venv is broken on this machine due to a Homebrew Python 3.14
-> update. Use `python3.12` directly until the venv is rebuilt.
+---
 
+### Mac
+
+#### Requirements
+- macOS 11 or later
+- [Homebrew](https://brew.sh) (package manager)
+- Python 3.12
+- [Ollama](https://ollama.com) (local AI — free, no key needed)
+- Git
+- At least one API key (see [API Keys](#api-keys) below)
+
+#### Step-by-step
+
+**1. Install Homebrew** (skip if already installed)
 ```bash
-# 1. Clone the repo
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**2. Install Python 3.12 and Git**
+```bash
+brew install python@3.12 git
+```
+
+Verify:
+```bash
+python3.12 --version   # should print Python 3.12.x
+git --version
+```
+
+**3. Install Ollama**
+
+Download from **https://ollama.com/download** and run the installer.
+
+Then pull the two models Angel Filter needs:
+```bash
+ollama pull nomic-embed-text   # embedding model — used for ranking
+ollama pull llama3.2           # generation model — used as a provider
+```
+
+Verify Ollama is running:
+```bash
+curl http://localhost:11434/api/tags
+```
+You should see a JSON list of installed models.
+
+**4. Clone the repo**
+```bash
 git clone https://github.com/adonisja/NLIP-Project
 cd NLIP-Project
-
-# 2. Install dependencies
-pip3.12 install fastapi uvicorn httpx prometheus-client ollama
-
-# 3. Pull embedding model for semantic ranking
-ollama pull nomic-embed-text
-
-# 4. Pull a generation model for the Ollama provider
-ollama pull llama3.2
-
-# 5. Copy and fill in your API keys
-cp .env.example .env   # then edit .env
 ```
 
-### Environment variables (`.env`)
-
-```
-OPENAI_API_KEY=sk-...
-GEMINI_API_KEY=...
-WATSONX_API_KEY=...
-WATSONX_PROJECT_ID=178e05b2-3352-4f21-8388-572e6b13d65d
-WATSONX_REGION=us-east
-WATSONX_MODEL=ibm/granite-13b-instruct-v2
-OLLAMA_MODEL=llama3.2:latest
-BRAVE_API_KEY=...        # optional — get free key at api.search.brave.com
+**5. Install Python dependencies**
+```bash
+pip3.12 install fastapi "uvicorn[standard]" httpx prometheus-client ollama python-dotenv
 ```
 
-Providers are enabled automatically when their key is present. The server
-will not start if no providers are configured.
+**6. Download Plotly** (required for the 3D visualization)
+```bash
+curl -o static/plotly.min.js https://cdn.plot.ly/plotly-2.32.0.min.js
+```
 
-### Starting the server
+**7. Set up your API keys**
 
+Create a `.env` file in the project root:
+```bash
+cp .env.example .env
+```
+Then open `.env` in any text editor and fill in your keys (see [API Keys](#api-keys) below).
+
+**8. Start the server**
 ```bash
 ./start.sh
 ```
 
-Then open **http://localhost:8005** in a browser.
+Open **http://localhost:8005** in your browser.
+
+---
+
+### Windows
+
+#### Requirements
+- Windows 10 or 11
+- [Python 3.12](https://www.python.org/downloads/) (check "Add to PATH" during install)
+- [Ollama for Windows](https://ollama.com/download)
+- [Git for Windows](https://git-scm.com/download/win)
+- At least one API key (see [API Keys](#api-keys) below)
+
+#### Step-by-step
+
+**1. Install Python 3.12**
+
+Download from **https://www.python.org/downloads/release/python-3120/**
+
+During installation, check **"Add python.exe to PATH"** — this is important.
+
+Verify in a new terminal (Command Prompt or PowerShell):
+```
+python --version   # should print Python 3.12.x
+pip --version
+```
+
+**2. Install Git**
+
+Download from **https://git-scm.com/download/win** and run the installer with default settings.
+
+**3. Install Ollama**
+
+Download from **https://ollama.com/download** and run the installer.
+
+Open a new terminal and pull the two models:
+```
+ollama pull nomic-embed-text
+ollama pull llama3.2
+```
+
+Verify Ollama is running:
+```
+curl http://localhost:11434/api/tags
+```
+
+**4. Clone the repo**
+```
+git clone https://github.com/adonisja/NLIP-Project
+cd NLIP-Project
+```
+
+**5. Install Python dependencies**
+```
+pip install fastapi "uvicorn[standard]" httpx prometheus-client ollama python-dotenv
+```
+
+**6. Download Plotly**
+
+In PowerShell:
+```powershell
+Invoke-WebRequest -Uri "https://cdn.plot.ly/plotly-2.32.0.min.js" -OutFile "static\plotly.min.js"
+```
+
+**7. Set up your API keys**
+
+Copy the example env file:
+```
+copy .env.example .env
+```
+Open `.env` in Notepad or VS Code and fill in your keys.
+
+**8. Start the server**
+
+On Windows, `start.sh` won't work directly. Run this instead:
+```
+python -m uvicorn angel_filter.server:app --reload --port 8005
+```
+
+Or if you have Git Bash installed:
+```bash
+./start.sh
+```
+
+Open **http://localhost:8005** in your browser.
+
+---
+
+### API Keys
+
+You need **at least one** of the following. The server auto-detects which keys are present and enables those providers.
+
+| Provider | Key name | Where to get it | Cost |
+|---|---|---|---|
+| Gemini | `GEMINI_API_KEY` | [aistudio.google.com](https://aistudio.google.com) | Free tier available |
+| OpenAI | `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) | Free trial credits |
+| WatsonX | `WATSONX_API_KEY` + `WATSONX_PROJECT_ID` | [cloud.ibm.com](https://cloud.ibm.com) | Free tier available |
+| Brave Search | `BRAVE_API_KEY` | [api.search.brave.com](https://api.search.brave.com) | 2,000 free queries/month |
+| Ollama | *(no key needed)* | Runs locally after install | Free |
+
+Create a `.env` file in the project root with your keys:
+
+```
+# Required — at least one AI provider
+GEMINI_API_KEY=your-key-here
+OPENAI_API_KEY=your-key-here
+
+# WatsonX (needs both values)
+WATSONX_API_KEY=your-key-here
+WATSONX_PROJECT_ID=your-project-id-here
+WATSONX_REGION=us-east
+WATSONX_MODEL=ibm/granite-13b-instruct-v2
+
+# Ollama (no key — just set the model name)
+OLLAMA_MODEL=llama3.2:latest
+
+# Optional
+BRAVE_API_KEY=your-key-here
+```
+
+> **Never commit your `.env` file.** It is already listed in `.gitignore`.
+> Each contributor creates their own `.env` locally.
+
+---
+
+### Verifying your setup
+
+After starting the server, check that providers loaded correctly:
+
+```bash
+curl http://localhost:8005/health
+```
+
+You should see something like:
+```json
+{
+  "ok": true,
+  "mode": "fallback",
+  "providers": ["openai", "gemini", "ollama"],
+  "uptime_seconds": 5.1
+}
+```
+
+If `providers` is empty, check your `.env` file and make sure the keys are set correctly.
+
+Run the test suite (no network or API keys needed):
+```bash
+# Mac
+python3.12 -m pytest tests/ -v
+
+# Windows
+python -m pytest tests/ -v
+```
+
+All 23 tests should pass.
 
 ---
 
