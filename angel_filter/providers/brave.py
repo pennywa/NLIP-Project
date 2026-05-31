@@ -28,7 +28,7 @@ class BraveProvider(BaseProvider):
     def __init__(self, api_key: str | None = None):
         self._api_key = api_key or os.getenv("BRAVE_API_KEY")
 
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(self, user_query: str, max_results: int = 10, constraints=None) -> list[ProviderResult]:
         import httpx
 
         if not self._api_key:

@@ -19,6 +19,8 @@ import re
 import time
 from typing import Any
 
+from angel_filter.constraints import QueryConstraints
+from angel_filter.prompt import build_prompt
 from angel_filter.providers.base import BaseProvider, ProviderError, ProviderResult
 
 logger = logging.getLogger(__name__)
@@ -73,7 +75,12 @@ class WatsonXProvider(BaseProvider):
         self._token: str | None = None
         self._token_expiry: float = 0.0
 
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(
+        self,
+        user_query: str,
+        max_results: int = 10,
+        constraints: QueryConstraints | None = None,
+    ) -> list[ProviderResult]:
         import httpx
 
         api_key    = os.getenv("WATSONX_API_KEY")
@@ -85,7 +92,7 @@ class WatsonXProvider(BaseProvider):
             raise ProviderError("WATSONX_PROJECT_ID is not set")
 
         token = await self._get_token(api_key)
-        prompt = _PROMPT_TEMPLATE.format(query=user_query, top_k=max_results)
+        prompt = build_prompt(user_query, max_results, constraints, strict_format=True)
         url    = _WATSONX_URL.format(region=self.region)
 
         try:
@@ -170,13 +177,16 @@ def _parse_results(payload: dict[str, Any], max_results: int) -> list[ProviderRe
         name = str(c.get("name", "")).strip()
         if not name:
             continue
+        area = str(c.get("area", "")).strip()
+        notes = str(c.get("notes", "")).strip()
+        snippet = f"{area} — {notes}" if area else notes
         results.append(ProviderResult(
             title=name,
-            snippet=str(c.get("notes", "")).strip(),
+            snippet=snippet,
             provider="watsonx",
             rank_in_provider=i,
             price=_parse_float(c.get("price")),
-            distance=_parse_float(c.get("distance_miles")),
+            distance=None,
             rating=_parse_float(c.get("rating")),
             sponsored=False,
         ))

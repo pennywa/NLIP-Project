@@ -25,7 +25,7 @@ class MockProvider(BaseProvider):
         self.name = name
         self._canned = canned_results or _default_lunch_results()
 
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(self, user_query: str, max_results: int = 10, constraints=None) -> list[ProviderResult]:
         """Return canned results filtered by keyword overlap with the query.
 
         Any result whose title or snippet shares at least one non-trivial token

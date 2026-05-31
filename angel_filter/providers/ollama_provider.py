@@ -16,6 +16,8 @@ import os
 import re
 from typing import Any
 
+from angel_filter.constraints import QueryConstraints
+from angel_filter.prompt import build_prompt
 from angel_filter.providers.base import BaseProvider, ProviderError, ProviderResult
 
 logger = logging.getLogger(__name__)
@@ -59,10 +61,15 @@ class OllamaProvider(BaseProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
 
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(
+        self,
+        user_query: str,
+        max_results: int = 10,
+        constraints: QueryConstraints | None = None,
+    ) -> list[ProviderResult]:
         import httpx
 
-        prompt = _PROMPT_TEMPLATE.format(query=user_query, top_k=max_results)
+        prompt = build_prompt(user_query, max_results, constraints, strict_format=True)
 
         try:
             async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
@@ -113,13 +120,16 @@ def _parse_results(payload: dict[str, Any], max_results: int) -> list[ProviderRe
         name = str(c.get("name", "")).strip()
         if not name:
             continue
+        area = str(c.get("area", "")).strip()
+        notes = str(c.get("notes", "")).strip()
+        snippet = f"{area} — {notes}" if area else notes
         results.append(ProviderResult(
             title=name,
-            snippet=str(c.get("notes", "")).strip(),
+            snippet=snippet,
             provider="ollama",
             rank_in_provider=i,
             price=_parse_float(c.get("price")),
-            distance=_parse_float(c.get("distance_miles")),
+            distance=None,
             rating=_parse_float(c.get("rating")),
             sponsored=False,
         ))

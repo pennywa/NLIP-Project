@@ -17,6 +17,8 @@ import os
 import re
 from typing import Any
 
+from angel_filter.constraints import QueryConstraints
+from angel_filter.prompt import build_prompt
 from angel_filter.providers.base import BaseProvider, ProviderError, ProviderResult
 
 logger = logging.getLogger(__name__)
@@ -28,33 +30,6 @@ _GEMINI_URL = (
 _TIMEOUT = 45
 _DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-_PROMPT_TEMPLATE = """
-Return the best recommendations for the user query below.
-
-User query:
-{query}
-
-Respond as JSON only with this exact schema:
-{{
-  "query_summary": "short explanation",
-  "candidates": [
-    {{
-      "name": "place name",
-      "price": 12.5,
-      "distance_miles": 0.8,
-      "rating": 4.4,
-      "notes": "why this fits"
-    }}
-  ]
-}}
-
-Rules:
-- Return up to {top_k} candidates.
-- Use numeric values for price, distance_miles, and rating whenever possible.
-- If a value is unknown, use null.
-- Do not include markdown, code fences, or extra text.
-""".strip()
-
 
 class GeminiProvider(BaseProvider):
     name = "gemini"
@@ -62,14 +37,19 @@ class GeminiProvider(BaseProvider):
     def __init__(self, model: str = _DEFAULT_MODEL):
         self.model = model
 
-    async def query(self, user_query: str, max_results: int = 10) -> list[ProviderResult]:
+    async def query(
+        self,
+        user_query: str,
+        max_results: int = 10,
+        constraints: QueryConstraints | None = None,
+    ) -> list[ProviderResult]:
         import httpx
 
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ProviderError("GEMINI_API_KEY is not set")
 
-        prompt = _PROMPT_TEMPLATE.format(query=user_query, top_k=max_results)
+        prompt = build_prompt(user_query, max_results, constraints)
         url = _GEMINI_URL.format(model=self.model, api_key=api_key)
 
         try:
@@ -121,13 +101,16 @@ def _parse_results(payload: dict[str, Any], max_results: int) -> list[ProviderRe
         name = str(c.get("name", "")).strip()
         if not name:
             continue
+        area = str(c.get("area", "")).strip()
+        notes = str(c.get("notes", "")).strip()
+        snippet = f"{area} — {notes}" if area else notes
         results.append(ProviderResult(
             title=name,
-            snippet=str(c.get("notes", "")).strip(),
+            snippet=snippet,
             provider="gemini",
             rank_in_provider=i,
             price=_parse_float(c.get("price")),
-            distance=_parse_float(c.get("distance_miles")),
+            distance=None,  # AI has no location context
             rating=_parse_float(c.get("rating")),
             sponsored=False,
         ))
