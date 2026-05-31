@@ -1,5 +1,0 @@
-flask>=3.0.0
-manim>=0.19.0
-numpy>=1.26.0
-requests>=2.32.0
-sentence-transformers>=3.0.0

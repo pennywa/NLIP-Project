@@ -1,7 +1,0 @@
-.env
-__pycache__
-
-# Manim render artifacts
-media/videos/
-media/images/
-media/texts/

@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Angel Filter</title>
+<script src="/static/plotly.min.js"></script>
 <style>
   :root {
     --bg: #0f1420; --card: #1a2032; --ink: #e8ecf5; --muted: #93a0b8;
@@ -12,7 +13,7 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
-  main { max-width: 860px; margin: 0 auto; padding: 40px 24px; }
+  main { max-width: 900px; margin: 0 auto; padding: 40px 24px; }
   h1 { margin: 0 0 4px; font-size: 28px; letter-spacing: -0.02em; }
   .sub { color: var(--muted); margin-bottom: 28px; }
   form { display: grid; gap: 10px; margin-bottom: 24px; }
@@ -53,6 +54,11 @@
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .error { color: var(--warn); }
+
+  /* 3D Plot */
+  .plot-section { margin-top: 32px; }
+  .plot-title { font-size: 14px; font-weight: 600; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+  #plot { width: 100%; height: 480px; border-radius: 14px; overflow: hidden; background: var(--card); border: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -69,12 +75,27 @@
   </form>
 
   <div id="out"></div>
+  <div id="plot-wrap" style="display:none" class="plot-section">
+    <div class="plot-title">3D Scoring Space — Price · Distance · Rating</div>
+    <div id="plot"></div>
+  </div>
 </main>
 
 <script>
 const form = document.getElementById("f");
 const out  = document.getElementById("out");
 const btn  = document.getElementById("go");
+const plotWrap = document.getElementById("plot-wrap");
+
+const PROVIDER_COLORS = {
+  gemini:     "#0f766e",
+  ollama:     "#b45309",
+  openai:     "#10a37f",
+  watsonx:    "#0f62fe",
+  duckduckgo: "#2563eb",
+  brave:      "#e05c2a",
+  mock:       "#7c3aed",
+};
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -83,6 +104,7 @@ form.addEventListener("submit", async (e) => {
   if (!query) return;
 
   btn.disabled = true;
+  plotWrap.style.display = "none";
   out.innerHTML = `<div class="meta">Querying providers…</div>`;
 
   try {
@@ -92,7 +114,12 @@ form.addEventListener("submit", async (e) => {
       body: JSON.stringify({ query, preference }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    render(await res.json());
+    const data = await res.json();
+    render(data);
+    if ((data.results || []).length > 0) {
+      renderPlot(data.results);
+      plotWrap.style.display = "block";
+    }
   } catch (err) {
     out.innerHTML = `<div class="card error">Request failed: ${esc(err.message)}</div>`;
   } finally {
@@ -117,7 +144,7 @@ function render(data) {
     return;
   }
 
-  // --- Best answer (first result) ---
+  // --- Best answer ---
   const best = results[0];
   const axes = best.axis_scores || {};
   const axisHtml = Object.entries(axes).map(([k, v]) =>
@@ -146,7 +173,6 @@ function render(data) {
     <div class="snippet" style="margin-top:8px"><em>${esc(best.rationale || "")}</em></div>
   </div>`;
 
-  // --- Toggle for remaining results ---
   if (results.length > 1) {
     html += `<button class="toggle-btn" onclick="toggleOthers(this)">
       Show other responses (${results.length - 1})
@@ -178,10 +204,114 @@ function render(data) {
   out.innerHTML = html;
 }
 
+// --- 3D Plot -----------------------------------------------------------
+// Each result has axis_scores: { P1_price, P2_distance, P3_rating } (0-1).
+// We map those directly to X/Y/Z so the best result sits in the
+// high-score corner and the worst in the low corner.
+
+function renderPlot(results) {
+  const winnerTitle = results[0].title;
+
+  const xs = results.map(r => (r.axis_scores || {}).P1_price    || 0.5);
+  const ys = results.map(r => (r.axis_scores || {}).P2_distance || 0.5);
+  const zs = results.map(r => (r.axis_scores || {}).P3_rating   || 0.5);
+  const labels = results.map((r, i) =>
+    r.title === winnerTitle ? `Winner: ${r.title}` : `#${i + 1}: ${r.title}`
+  );
+  const colors = results.map(r =>
+    r.title === winnerTitle ? "#dc2626" : (PROVIDER_COLORS[r.provider] || "#6aa9ff")
+  );
+  const sizes = results.map(r => r.title === winnerTitle ? 14 : 9);
+  const symbols = results.map(r => r.title === winnerTitle ? "diamond" : "circle");
+
+  // Lines from origin to each point
+  const lineTraces = results.map((r, i) => ({
+    x: [0, xs[i]], y: [0, ys[i]], z: [0, zs[i]],
+    mode: "lines", type: "scatter3d",
+    line: {
+      color: colors[i],
+      width: r.title === winnerTitle ? 6 : 3,
+      dash:  r.title === winnerTitle ? "solid" : "dot",
+    },
+    opacity: r.title === winnerTitle ? 0.9 : 0.4,
+    hoverinfo: "skip", showlegend: false,
+  }));
+
+  // Result points
+  const pointTrace = {
+    x: xs, y: ys, z: zs,
+    text: labels,
+    mode: "markers+text",
+    type: "scatter3d",
+    textposition: "top center",
+    textfont: { size: 10, color: "#e8ecf5" },
+    customdata: results.map(r => [
+      r.title, r.provider, r.score,
+      (r.axis_scores || {}).P1_price    || "—",
+      (r.axis_scores || {}).P2_distance || "—",
+      (r.axis_scores || {}).P3_rating   || "—",
+      r.sponsored ? "sponsored" : "organic",
+    ]),
+    hovertemplate:
+      "<b>%{customdata[0]}</b><br>" +
+      "Provider: %{customdata[1]}<br>" +
+      "Score: %{customdata[2]}<br>" +
+      "P1 price: %{customdata[3]}<br>" +
+      "P2 distance: %{customdata[4]}<br>" +
+      "P3 rating: %{customdata[5]}<br>" +
+      "%{customdata[6]}<extra></extra>",
+    marker: { size: sizes, color: colors, symbol: symbols, opacity: 0.95, line: { color: "#ffffff", width: 1.2 } },
+    showlegend: false,
+  };
+
+  // Origin marker
+  const originTrace = {
+    x: [0], y: [0], z: [0],
+    text: ["Query origin"],
+    mode: "markers+text", type: "scatter3d",
+    textposition: "bottom center",
+    textfont: { size: 11, color: "#93a0b8" },
+    marker: { size: 10, color: "#1b1d1f", symbol: "diamond" },
+    hovertemplate: "<b>Query origin (0,0,0)</b><extra></extra>",
+    showlegend: false,
+  };
+
+  // Legend entries for providers actually present
+  const seenProviders = [...new Set(results.map(r => r.provider))];
+  const legendTraces = [
+    ...seenProviders.map(p => ({
+      x: [null], y: [null], z: [null], mode: "markers", type: "scatter3d",
+      marker: { size: 8, color: PROVIDER_COLORS[p] || "#6aa9ff" },
+      name: p, hoverinfo: "skip", showlegend: true,
+    })),
+    { x: [null], y: [null], z: [null], mode: "markers", type: "scatter3d",
+      marker: { size: 8, color: "#dc2626" }, name: "Winner", hoverinfo: "skip", showlegend: true },
+  ];
+
+  Plotly.newPlot("plot", [...lineTraces, pointTrace, originTrace, ...legendTraces], {
+    margin: { l: 0, r: 0, b: 0, t: 32 },
+    paper_bgcolor: "rgba(0,0,0,0)",
+    plot_bgcolor:  "rgba(0,0,0,0)",
+    font: { color: "#93a0b8" },
+    scene: {
+      xaxis: { title: "P1 Price score",    backgroundcolor: "rgba(255,255,255,0.04)", gridcolor: "rgba(255,255,255,0.08)", zerolinecolor: "rgba(255,255,255,0.2)", range: [0, 1] },
+      yaxis: { title: "P2 Distance score", backgroundcolor: "rgba(255,255,255,0.04)", gridcolor: "rgba(255,255,255,0.08)", zerolinecolor: "rgba(255,255,255,0.2)", range: [0, 1] },
+      zaxis: { title: "P3 Rating score",   backgroundcolor: "rgba(255,255,255,0.04)", gridcolor: "rgba(255,255,255,0.08)", zerolinecolor: "rgba(255,255,255,0.2)", range: [0, 1] },
+      camera: { eye: { x: 1.6, y: 1.4, z: 1.2 } },
+      aspectmode: "cube",
+    },
+    legend: {
+      orientation: "h", x: 0, y: 1, yanchor: "top", xanchor: "left",
+      bgcolor: "rgba(26,32,50,0.85)", bordercolor: "rgba(255,255,255,0.1)", borderwidth: 1,
+    },
+    showlegend: true,
+  }, { responsive: true, displayModeBar: false });
+}
+
 function toggleOthers(btn) {
   const el = document.getElementById("others");
   const open = el.classList.toggle("open");
-  const count = (el.querySelectorAll(".card") || []).length;
+  const count = el.querySelectorAll(".card").length;
   btn.textContent = open
     ? `Hide other responses (${count})`
     : `Show other responses (${count})`;

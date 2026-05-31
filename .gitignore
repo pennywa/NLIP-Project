@@ -29,6 +29,9 @@ localdev-config.json
 dist/
 build/
 
+# Large vendored JS (served locally but not committed)
+static/plotly.min.js
+
 # Upstream NLIP reference repos — installed as Poetry deps, not committed
 refs/
 
